@@ -1,0 +1,125 @@
+name: setup-moodle-plugin-test
+description: 'Setup Moodle plugin test environment'
+
+inputs:
+  moodle:
+    description: >
+      Moodle ref
+    required: false
+    default: 'MOODLE_405_STABLE'
+  php:
+    description: >
+      PHP version
+    required: false
+    default: '8.2'
+  db:
+    description: >
+      Database type
+    required: false
+    default: 'pgsql'
+  dependencies:
+    description: >
+      Plugin dependencies.
+      Use multiple lines for multiple dependencies.
+      Example: |
+        enchman/moodle-local_mylocal@main
+        enchman/moodle-block_myblock@1234567890abcdef
+    required: false
+    default: ''
+  db-name:
+    description: >
+      Database name
+    required: false
+    default: 'test'
+  db-user:
+    description: >
+      Database user
+    required: false
+    default: 'test'
+  db-pass:
+    description: >
+      Database password
+    required: false
+    default: 'test'
+
+env:
+  PHP_BIN: ''
+  DB_TYPE: ${{ inputs.db }}
+  DB_NAME: ${{ inputs.db-name }}
+  DB_USER: ${{ inputs.db-user }}
+  DB_PASS: ${{ inputs.db-pass }}
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/checkout@v4
+    - name: Preparing
+      uses: actions/setup-node@v4
+      with:
+        node-version: 'latest'
+    - shell: bash
+      run: |
+        npm install
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php }}
+        ini-values: max_input_vars=5000
+        coverage: none
+
+    - name: Setup MySQL
+      if: ${{ inputs.db == 'mysqli' }}
+      uses: moodlehq/mysql-action@v1
+      with:
+        collation server: utf8mb4_bin
+        mysql version: 8.4
+        mysql database: ${{ inputs.db-name }}
+        mysql user: ${{ inputs.db-user }}
+        mysql password: ${{ inputs.db-pass }}
+        use tmpfs: true
+        tmpfs size: '1024M'
+        extra conf: --skip-log-bin
+
+    - name: Setup Postgres
+      if: ${{ inputs.db == 'pgsql' }}
+      uses: m4nu56/postgresql-action@v1
+      with:
+        postgresql version: 16
+        postgresql db: ${{ inputs.db-name }}
+        postgresql user: ${{ inputs.db-user }}
+        postgresql password: ${{ inputs.db-pass }}
+
+    - name: Setup MSSQL
+      if: ${{ inputs.db == 'mssql' }}
+      uses: enchman/setup-mssql-server@v1
+      with:
+        postgresql version: 19
+        postgresql db: ${{ inputs.db-name }}
+        postgresql user: ${{ inputs.db-user }}
+        postgresql password: ${{ inputs.db-pass }}
+  
+    - name: Prepare Moodle
+      uses: actions/checkout@v4
+      with:
+        repository: moodle/moodle
+        ref: ${{ inputs.moodle }}
+        path: ${{ github.workspace }}/moodle
+
+    - name: Install plugin dependencies
+      if: ${{ inputs.dependencies != '' }}
+      shell: bash
+      run: |
+        node ${{ github.action_path }}/dist/index.js
+
+    - shell: bash
+      run: |
+          echo "PHP_BIN=$(which php)" >> $GITHUB_ENV
+          cp ${{ github.action_path }}/moodle-config.php ${{ github.workspace }}/moodle/config.php
+          mkdir ${{ github.workspace }}/moodledata
+          sudo locale-gen en_AU.UTF-8
+          php ${{ github.workspace }}/moodle/admin/tool/phpunit/cli/init.php --no-composer-self-update
+    
+    - name: Run PHPUnit
+      run: |
+        ${{ github.workspace }}/moodle/vendor/bin/phpunit --testdox --verbose --testsuite ${{ env.PLUGIN_COMPONENT }}_testsuite
